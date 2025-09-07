@@ -19,9 +19,7 @@ import requests
 import signal
 import time
 
-# Load environment variables
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-openai_api_key = os.getenv("OPENAI_API_KEY")
+# Environment variables will be loaded in functions as needed
 
 class ForecastState(TypedDict):
     """The state for the weather forecast subagent."""
@@ -81,6 +79,12 @@ def timeout_handler(signum, frame):
 
 def call_llm_with_timeout(prompt, timeout_seconds=8):
     """Call LLM with timeout and fallback to OpenAI if Gemini times out."""
+    
+    # Load environment variables
+    from dotenv import load_dotenv
+    load_dotenv()
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    openai_api_key = os.getenv("OPENAI_API_KEY")
     
     # Try Gemini first with timeout
     try:
