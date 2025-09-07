@@ -1,6 +1,7 @@
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langgraph.graph.message import add_messages # helper function to add messages to the state
+from langgraph.graph import StateGraph, END
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from geopy.geocoders import Nominatim
@@ -19,6 +20,10 @@ api_key = os.getenv("GEMINI_API_KEY")
 class AgentState(TypedDict):
     """The state of the agent."""
     messages: Annotated[Sequence[BaseMessage], add_messages]
+    location: str
+    date: str
+    weather_data: dict
+    formatted_output: str
     number_of_steps: int
 
 geolocator = Nominatim(user_agent="weather-app")
@@ -59,70 +64,168 @@ def get_weather_forecast(location: str, date: str):
 
 tools = [get_weather_forecast]
 
-def execute_tool_call(tool_call):
-    """Execute a tool call and return the result."""
-    tool_name = tool_call["name"]
-    tool_args = tool_call["args"]
-    
-    if tool_name == "get_weather_forecast":
-        return get_weather_forecast.invoke(tool_args)
-    else:
-        return {"error": f"Unknown tool: {tool_name}"}
+# LangGraph Node Functions
 
-def format_weather_output(weather_data):
-    """Format weather data for nice display."""
-    if "error" in weather_data:
-        return f"❌ {weather_data['error']}"
+def process_input(state: AgentState) -> AgentState:
+    """Process the input and extract location and date information."""
+    print("📝 Processing input...")
     
-    output = f"🌤️  Weather Forecast for {weather_data['location']}\n"
-    output += f"📅 Date: {weather_data['date']}\n"
-    output += "=" * 50 + "\n"
+    # Get the user message
+    user_message = state["messages"][-1].content
     
-    for time, temp in weather_data['forecast'].items():
-        output += f"🕐 {time}: {temp}\n"
-    
-    return output
-
-def run_weather_agent(location, date=None):
-    """Run the weather agent with the given location and date."""
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    
-    # Create LLM
+    # Create LLM to extract location and date
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
-        temperature=0.1,  # Lower temperature for more consistent results
+        temperature=0.1,
         max_retries=2,
         google_api_key=api_key,
     )
     
-    # Bind tools to the model
-    model = llm.bind_tools([get_weather_forecast])
+    # Ask the LLM to extract location and date
+    extraction_prompt = f"""
+    Extract the location and date from this user request: "{user_message}"
     
-    # Create the user message
-    user_message = f"What is the weather in {location} on {date}?"
+    Return the information in this exact format:
+    Location: [city name]
+    Date: [YYYY-MM-DD format, or "today" if no date specified]
     
-    print(f"🤖 Processing request: {user_message}")
+    If no date is specified, use "today".
+    """
     
-    # Get the model response
-    response = model.invoke([HumanMessage(content=user_message)])
+    response = llm.invoke(extraction_prompt)
     
-    # Check if the model wants to call a tool
-    if hasattr(response, 'tool_calls') and response.tool_calls:
-        print("🔧 Executing tool call...")
-        
-        # Execute the tool call
-        tool_result = execute_tool_call(response.tool_calls[0])
-        
-        # Format and display the result
-        formatted_output = format_weather_output(tool_result)
-        print("\n" + formatted_output)
-        
-        return tool_result
+    # Parse the response to extract location and date
+    lines = response.content.strip().split('\n')
+    location = None
+    date = None
+    
+    for line in lines:
+        if line.startswith('Location:'):
+            location = line.replace('Location:', '').strip()
+        elif line.startswith('Date:'):
+            date_str = line.replace('Date:', '').strip()
+            if date_str.lower() == 'today':
+                date = datetime.now().strftime("%Y-%m-%d")
+            else:
+                date = date_str
+    
+    if not location:
+        location = "Unknown"
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+    
+    print(f"📍 Extracted - Location: {location}, Date: {date}")
+    
+    return {
+        **state,
+        "location": location,
+        "date": date,
+        "number_of_steps": state.get("number_of_steps", 0) + 1
+    }
+
+def fetch_weather(state: AgentState) -> AgentState:
+    """Fetch weather data for the specified location and date."""
+    print("🌍 Fetching weather data...")
+    
+    location = state["location"]
+    date = state["date"]
+    
+    # Use the existing weather function
+    weather_data = get_weather_forecast.invoke({"location": location, "date": date})
+    
+    print(f"✅ Weather data fetched for {location} on {date}")
+    
+    return {
+        **state,
+        "weather_data": weather_data,
+        "number_of_steps": state.get("number_of_steps", 0) + 1
+    }
+
+def format_output(state: AgentState) -> AgentState:
+    """Format the weather data for display."""
+    print("🎨 Formatting output...")
+    
+    weather_data = state["weather_data"]
+    
+    if "error" in weather_data:
+        formatted_output = f"❌ {weather_data['error']}"
     else:
-        # If no tool call, just return the response content
-        print(f"🤖 {response.content}")
-        return response.content
+        output = f"🌤️  Weather Forecast for {weather_data['location']}\n"
+        output += f"📅 Date: {weather_data['date']}\n"
+        output += "=" * 50 + "\n"
+        
+        for time, temp in weather_data['forecast'].items():
+            output += f"🕐 {time}: {temp}\n"
+        
+        formatted_output = output
+    
+    return {
+        **state,
+        "formatted_output": formatted_output,
+        "number_of_steps": state.get("number_of_steps", 0) + 1
+    }
+
+def write_output(state: AgentState) -> AgentState:
+    """Write the formatted output to console."""
+    print("📤 Writing output...")
+    print("\n" + state["formatted_output"])
+    
+    return {
+        **state,
+        "number_of_steps": state.get("number_of_steps", 0) + 1
+    }
+
+# Create the LangGraph workflow
+def create_weather_graph():
+    """Create the LangGraph workflow for weather forecasting."""
+    workflow = StateGraph(AgentState)
+    
+    # Add nodes
+    workflow.add_node("START", lambda state: state)  # Entry point
+    workflow.add_node("process_input", process_input)
+    workflow.add_node("fetch_weather", fetch_weather)
+    workflow.add_node("format_output", format_output)
+    workflow.add_node("write_output", write_output)
+    workflow.add_node("END", lambda state: state)    # Exit point
+    
+    # Define the workflow edges
+    workflow.set_entry_point("START")
+    workflow.add_edge("START", "process_input")
+    workflow.add_edge("process_input", "fetch_weather")
+    workflow.add_edge("fetch_weather", "format_output")
+    workflow.add_edge("format_output", "write_output")
+    workflow.add_edge("write_output", "END")
+    
+    return workflow.compile()
+
+def run_weather_agent(location, date=None):
+    """Run the weather agent using LangGraph workflow."""
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    
+    # Create the graph
+    graph = create_weather_graph()
+    
+    # Create initial state
+    initial_state = {
+        "messages": [HumanMessage(content=f"What is the weather in {location} on {date}?")],
+        "location": "",
+        "date": "",
+        "weather_data": {},
+        "formatted_output": "",
+        "number_of_steps": 0
+    }
+    
+    print(f"🚀 Starting weather forecast workflow...")
+    print(f"📍 Request: {location} on {date}")
+    
+    # Run the graph
+    result = graph.invoke(initial_state)
+    
+    print("=" * 50)
+    print(f"✅ Workflow completed in {result['number_of_steps']} steps")
+    
+    return result
 
 def main():
     """Main function to handle command line arguments."""
