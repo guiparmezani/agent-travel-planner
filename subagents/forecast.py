@@ -81,18 +81,19 @@ def timeout_handler(signum, frame):
     """Signal handler for timeout."""
     raise TimeoutError("Operation timed out")
 
-def call_llm_with_timeout(prompt, timeout_seconds=8):
-    """Call LLM with timeout and fallback to OpenAI if Gemini times out."""
-    
+# LangGraph Node Functions
+
+def create_llm_with_tools():
+    """Create LLM with tools using timeout and fallback system."""
     # Try Gemini first with timeout
     try:
-        print("🤖 Trying Gemini LLM...")
+        print("🤖 Trying Gemini LLM with tools...")
         
         # Set up timeout
         signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(timeout_seconds)
+        signal.alarm(8)  # 8 second timeout
         
-        # Create Gemini LLM
+        # Create Gemini LLM with tools
         gemini_llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
             temperature=0.1,
@@ -100,17 +101,17 @@ def call_llm_with_timeout(prompt, timeout_seconds=8):
             google_api_key=gemini_api_key,
         )
         
-        # Make the call
-        response = gemini_llm.invoke(prompt)
+        # Bind tools to the model
+        llm_with_tools = gemini_llm.bind_tools([get_weather_forecast])
         
         # Cancel timeout
         signal.alarm(0)
         
-        print("✅ Gemini LLM successful")
-        return response.content
+        print("✅ Gemini LLM with tools successful")
+        return llm_with_tools
         
     except TimeoutError:
-        print(f"⏰ Gemini timed out after {timeout_seconds} seconds")
+        print("⏰ Gemini timed out after 8 seconds")
         signal.alarm(0)  # Cancel timeout
         
         # Fallback to OpenAI
@@ -118,9 +119,9 @@ def call_llm_with_timeout(prompt, timeout_seconds=8):
             raise Exception("Gemini timed out and no OpenAI API key provided")
         
         try:
-            print("🔄 Falling back to OpenAI...")
+            print("🔄 Falling back to OpenAI with tools...")
             
-            # Create OpenAI LLM (using cheapest model: gpt-3.5-turbo)
+            # Create OpenAI LLM with tools
             openai_llm = ChatOpenAI(
                 model="gpt-3.5-turbo",
                 temperature=0.1,
@@ -128,9 +129,11 @@ def call_llm_with_timeout(prompt, timeout_seconds=8):
                 openai_api_key=openai_api_key,
             )
             
-            response = openai_llm.invoke(prompt)
-            print("✅ OpenAI fallback successful")
-            return response.content
+            # Bind tools to the model
+            llm_with_tools = openai_llm.bind_tools([get_weather_forecast])
+            
+            print("✅ OpenAI fallback with tools successful")
+            return llm_with_tools
             
         except Exception as e:
             raise Exception(f"Both Gemini and OpenAI failed. OpenAI error: {e}")
@@ -144,9 +147,9 @@ def call_llm_with_timeout(prompt, timeout_seconds=8):
             raise Exception(f"Gemini failed and no OpenAI API key provided. Gemini error: {e}")
         
         try:
-            print("🔄 Falling back to OpenAI...")
+            print("🔄 Falling back to OpenAI with tools...")
             
-            # Create OpenAI LLM
+            # Create OpenAI LLM with tools
             openai_llm = ChatOpenAI(
                 model="gpt-3.5-turbo",
                 temperature=0.1,
@@ -154,82 +157,68 @@ def call_llm_with_timeout(prompt, timeout_seconds=8):
                 openai_api_key=openai_api_key,
             )
             
-            response = openai_llm.invoke(prompt)
-            print("✅ OpenAI fallback successful")
-            return response.content
+            # Bind tools to the model
+            llm_with_tools = openai_llm.bind_tools([get_weather_forecast])
+            
+            print("✅ OpenAI fallback with tools successful")
+            return llm_with_tools
             
         except Exception as e2:
             raise Exception(f"Both Gemini and OpenAI failed. Gemini error: {e}, OpenAI error: {e2}")
 
-# LangGraph Node Functions
-
 def process_input(state: ForecastState) -> ForecastState:
-    """Process the input and extract location and date information."""
-    print("📝 Processing input...")
+    """Process the input using LLM with tools to get weather forecast."""
+    print("📝 Processing input with LLM tools...")
     
     # Get the user message
     user_message = state["messages"][-1].content
     
-    # Ask the LLM to extract location and date
-    extraction_prompt = f"""
-    Extract the location and date from this user request: "{user_message}"
+    # Create LLM with tools
+    llm = create_llm_with_tools()
     
-    Return the information in this exact format:
-    Location: [city name]
-    Date: [YYYY-MM-DD format, or "today" if no date specified]
+    # Create the user message
+    messages = [HumanMessage(content=user_message)]
     
-    If no date is specified, use "today".
-    """
+    # Get LLM response with tool calls
+    response = llm.invoke(messages)
     
-    # Use the timeout wrapper with fallback
-    response_content = call_llm_with_timeout(extraction_prompt, timeout_seconds=8)
-    
-    # Parse the response to extract location and date
-    lines = response_content.strip().split('\n')
-    location = None
-    date = None
-    
-    for line in lines:
-        if line.startswith('Location:'):
-            location = line.replace('Location:', '').strip()
-        elif line.startswith('Date:'):
-            date_str = line.replace('Date:', '').strip()
-            if date_str.lower() == 'today':
-                date = datetime.now().strftime("%Y-%m-%d")
-            else:
-                date = date_str
-    
-    if not location:
-        location = "Unknown"
-    if not date:
-        date = datetime.now().strftime("%Y-%m-%d")
-    
-    print(f"📍 Extracted - Location: {location}, Date: {date}")
-    
-    return {
-        **state,
-        "location": location,
-        "date": date,
-        "number_of_steps": state.get("number_of_steps", 0) + 1
-    }
+    # Check if the LLM wants to call a tool
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print("🔧 LLM wants to call weather forecast tool...")
+        
+        # Execute the tool call
+        tool_call = response.tool_calls[0]
+        if tool_call["name"] == "get_weather_forecast":
+            tool_args = tool_call["args"]
+            location = tool_args.get("location", "Unknown")
+            date = tool_args.get("date", datetime.now().strftime("%Y-%m-%d"))
+            
+            print(f"📍 Tool call - Location: {location}, Date: {date}")
+            
+            # Execute the weather forecast tool
+            weather_data = get_weather_forecast.invoke(tool_args)
+            
+            return {
+                **state,
+                "location": location,
+                "date": date,
+                "weather_data": weather_data,
+                "number_of_steps": state.get("number_of_steps", 0) + 1
+            }
+        else:
+            return {
+                **state,
+                "weather_data": {"error": f"Unknown tool: {tool_call['name']}"},
+                "number_of_steps": state.get("number_of_steps", 0) + 1
+            }
+    else:
+        # If no tool call, return error
+        return {
+            **state,
+            "weather_data": {"error": "LLM did not call weather forecast tool"},
+            "number_of_steps": state.get("number_of_steps", 0) + 1
+        }
 
-def fetch_weather(state: ForecastState) -> ForecastState:
-    """Fetch weather data for the specified location and date."""
-    print("🌍 Fetching weather data...")
-    
-    location = state["location"]
-    date = state["date"]
-    
-    # Use the existing weather function
-    weather_data = get_weather_forecast.invoke({"location": location, "date": date})
-    
-    print(f"✅ Weather data fetched for {location} on {date}")
-    
-    return {
-        **state,
-        "weather_data": weather_data,
-        "number_of_steps": state.get("number_of_steps", 0) + 1
-    }
 
 def prepare_result(state: ForecastState) -> ForecastState:
     """Prepare the final result data for return to main application."""
@@ -260,15 +249,13 @@ def create_forecast_graph():
     # Add nodes
     workflow.add_node("START", lambda state: state)  # Entry point
     workflow.add_node("process_input", process_input)
-    workflow.add_node("fetch_weather", fetch_weather)
     workflow.add_node("prepare_result", prepare_result)
     workflow.add_node("END", lambda state: state)    # Exit point
     
     # Define the workflow edges
     workflow.set_entry_point("START")
     workflow.add_edge("START", "process_input")
-    workflow.add_edge("process_input", "fetch_weather")
-    workflow.add_edge("fetch_weather", "prepare_result")
+    workflow.add_edge("process_input", "prepare_result")
     workflow.add_edge("prepare_result", "END")
     
     return workflow.compile()
