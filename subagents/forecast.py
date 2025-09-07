@@ -12,12 +12,16 @@ from geopy.geocoders import Nominatim
 from pydantic import BaseModel, Field
 from datetime import datetime
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
 import os
 import requests
+import signal
+import time
 
 # Load environment variables
-api_key = os.getenv("GEMINI_API_KEY")
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+openai_api_key = os.getenv("OPENAI_API_KEY")
 
 class ForecastState(TypedDict):
     """The state for the weather forecast subagent."""
@@ -65,6 +69,96 @@ def get_weather_forecast(location: str, date: str):
     else:
         return {"error": f"Location '{location}' not found"}
 
+# Utility Functions
+
+class TimeoutError(Exception):
+    """Custom timeout exception."""
+    pass
+
+def timeout_handler(signum, frame):
+    """Signal handler for timeout."""
+    raise TimeoutError("Operation timed out")
+
+def call_llm_with_timeout(prompt, timeout_seconds=8):
+    """Call LLM with timeout and fallback to OpenAI if Gemini times out."""
+    
+    # Try Gemini first with timeout
+    try:
+        print("🤖 Trying Gemini LLM...")
+        
+        # Set up timeout
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(timeout_seconds)
+        
+        # Create Gemini LLM
+        gemini_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            temperature=0.1,
+            max_retries=1,
+            google_api_key=gemini_api_key,
+        )
+        
+        # Make the call
+        response = gemini_llm.invoke(prompt)
+        
+        # Cancel timeout
+        signal.alarm(0)
+        
+        print("✅ Gemini LLM successful")
+        return response.content
+        
+    except TimeoutError:
+        print(f"⏰ Gemini timed out after {timeout_seconds} seconds")
+        signal.alarm(0)  # Cancel timeout
+        
+        # Fallback to OpenAI
+        if not openai_api_key:
+            raise Exception("Gemini timed out and no OpenAI API key provided")
+        
+        try:
+            print("🔄 Falling back to OpenAI...")
+            
+            # Create OpenAI LLM (using cheapest model: gpt-3.5-turbo)
+            openai_llm = ChatOpenAI(
+                model="gpt-3.5-turbo",
+                temperature=0.1,
+                max_retries=1,
+                openai_api_key=openai_api_key,
+            )
+            
+            response = openai_llm.invoke(prompt)
+            print("✅ OpenAI fallback successful")
+            return response.content
+            
+        except Exception as e:
+            raise Exception(f"Both Gemini and OpenAI failed. OpenAI error: {e}")
+    
+    except Exception as e:
+        print(f"❌ Gemini failed: {e}")
+        signal.alarm(0)  # Cancel timeout
+        
+        # Fallback to OpenAI
+        if not openai_api_key:
+            raise Exception(f"Gemini failed and no OpenAI API key provided. Gemini error: {e}")
+        
+        try:
+            print("🔄 Falling back to OpenAI...")
+            
+            # Create OpenAI LLM
+            openai_llm = ChatOpenAI(
+                model="gpt-3.5-turbo",
+                temperature=0.1,
+                max_retries=1,
+                openai_api_key=openai_api_key,
+            )
+            
+            response = openai_llm.invoke(prompt)
+            print("✅ OpenAI fallback successful")
+            return response.content
+            
+        except Exception as e2:
+            raise Exception(f"Both Gemini and OpenAI failed. Gemini error: {e}, OpenAI error: {e2}")
+
 # LangGraph Node Functions
 
 def process_input(state: ForecastState) -> ForecastState:
@@ -73,14 +167,6 @@ def process_input(state: ForecastState) -> ForecastState:
     
     # Get the user message
     user_message = state["messages"][-1].content
-    
-    # Create LLM to extract location and date
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        temperature=0.1,
-        max_retries=2,
-        google_api_key=api_key,
-    )
     
     # Ask the LLM to extract location and date
     extraction_prompt = f"""
@@ -93,10 +179,11 @@ def process_input(state: ForecastState) -> ForecastState:
     If no date is specified, use "today".
     """
     
-    response = llm.invoke(extraction_prompt)
+    # Use the timeout wrapper with fallback
+    response_content = call_llm_with_timeout(extraction_prompt, timeout_seconds=8)
     
     # Parse the response to extract location and date
-    lines = response.content.strip().split('\n')
+    lines = response_content.strip().split('\n')
     location = None
     date = None
     

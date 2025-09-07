@@ -53,6 +53,10 @@ if [ ! -f ".env" ]; then
 # Get your API key from: https://makersuite.google.com/app/apikey
 GEMINI_API_KEY=your_gemini_api_key_here
 
+# OpenAI API Key (fallback for Gemini)
+# Get your API key from: https://platform.openai.com/api-keys
+OPENAI_API_KEY=your_openai_api_key_here
+
 # Optional: LangSmith configuration for tracing
 # LANGCHAIN_TRACING_V2=true
 # LANGCHAIN_API_KEY=your_langsmith_api_key_here
@@ -68,7 +72,7 @@ echo "=================================================="
 echo "🎉 Setup completed successfully!"
 echo ""
 echo "📋 Next steps:"
-echo "1. Edit .env file and add your GEMINI_API_KEY"
+echo "1. Edit .env file and add your GEMINI_API_KEY and OPENAI_API_KEY"
 echo "2. Activate the virtual environment:"
 echo "   source venv/bin/activate"
 echo "3. Run the application:"

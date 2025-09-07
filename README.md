@@ -40,7 +40,7 @@ cd agent-travel-planner
 ```bash
 git clone <your-repo-url>
 cd agent-travel-planner
-python setup.py
+python3 setup.py
 ```
 
 ### Option 2: Manual Setup
@@ -75,6 +75,8 @@ cp .env.template .env
 2. Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
 
 ## 🎯 Usage
+
+**Note**: Use `python3` to run the setup script, but use `python` (without the "3") once the virtual environment is activated.
 
 ### Basic Usage
 
