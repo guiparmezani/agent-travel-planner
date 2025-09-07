@@ -3,15 +3,11 @@ Agent Travel Planner - Main Application
 A modular travel planning application with specialized subagents.
 """
 
-from dotenv import load_dotenv
 from datetime import datetime
 import sys
 
 # Import subagents
 from subagents.forecast import run_forecast_agent
-
-# Load environment variables
-load_dotenv()
 
 def format_weather_output(result_data):
     """Format weather forecast data for display."""
