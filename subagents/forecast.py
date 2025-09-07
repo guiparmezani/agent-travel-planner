@@ -54,30 +54,52 @@ tools = [get_weather_forecast]
 
 def create_model():
     """Create LLM with tools using timeout and fallback system."""
-    try:
-        print("🤖 Trying Gemini LLM with tools...")
-        
-        signal.signal(signal.SIGALRM, timeout_handler)
-        
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0.7,
-            google_api_key=gemini_api_key,
-        )
-        
-        model = llm.bind_tools(tools)
-        
-        signal.alarm(0)
-        print("✅ Gemini LLM with tools successful")
-        return model
-        
-    except Exception as e:
-        print(f"⚠️ Gemini failed: {e}")
-        
-        if not openai_api_key:
-            raise Exception("Gemini timed out and no OpenAI API key provided")
-        
-        print("🤖 Falling back to OpenAI...")
+    # Check if we have API keys first
+    if not gemini_api_key and not openai_api_key:
+        raise Exception("No API keys provided. Please set GEMINI_API_KEY or OPENAI_API_KEY in your .env file")
+    
+    # Try Gemini first if we have the key
+    if gemini_api_key:
+        try:
+            print("🤖 Trying Gemini LLM with tools...")
+            
+            # Set up timeout
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(8)  # 8 second timeout
+            
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                temperature=0.7,
+                google_api_key=gemini_api_key,
+            )
+            
+            model = llm.bind_tools(tools)
+            
+            # Test the API key with a simple call
+            from langchain_core.messages import HumanMessage
+            test_response = model.invoke([HumanMessage(content="test")])
+            
+            # Cancel timeout
+            signal.alarm(0)
+            print("✅ Gemini LLM with tools successful")
+            return model
+            
+        except Exception as e:
+            print(f"⚠️ Gemini failed: {e}")
+            signal.alarm(0)  # Cancel timeout
+            
+            # Check if it's an authentication error
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['invalid', 'unauthorized', 'authentication', 'api key', 'permission', 'forbidden']):
+                print("🔑 Invalid Gemini API key detected, falling back to OpenAI...")
+            else:
+                print("🔄 Gemini error occurred, falling back to OpenAI...")
+    else:
+        print("⚠️ No Gemini API key provided, skipping Gemini...")
+    
+    # Fallback to OpenAI if we have the key
+    if openai_api_key:
+        print("🤖 Using OpenAI...")
         try:
             llm = ChatOpenAI(
                 model="gpt-3.5-turbo",
@@ -88,8 +110,10 @@ def create_model():
             print("✅ OpenAI LLM with tools successful")
             return model
             
-        except Exception as e2:
-            raise Exception(f"Both Gemini and OpenAI failed. Gemini error: {e}, OpenAI error: {e2}")
+        except Exception as e:
+            raise Exception(f"OpenAI failed: {e}")
+    else:
+        raise Exception("No OpenAI API key provided. Please set OPENAI_API_KEY in your .env file")
 
 class TimeoutError(Exception):
     """Custom timeout exception."""
@@ -99,9 +123,17 @@ def timeout_handler(signum, frame):
     """Signal handler for timeout."""
     raise TimeoutError("Operation timed out")
 
-model = create_model()
+# Global model variable - will be created when needed
+model = None
 
 tools_by_name = {tool.name: tool for tool in tools}
+
+def get_model():
+    """Get the model, creating it if it doesn't exist."""
+    global model
+    if model is None:
+        model = create_model()
+    return model
 
 def call_tool(state: AgentState):
     outputs = []
@@ -120,7 +152,8 @@ def call_model(
     state: AgentState,
     config: RunnableConfig,
 ):
-    response = model.invoke(state["messages"], config)
+    current_model = get_model()
+    response = current_model.invoke(state["messages"], config)
     return {"messages": [response]}
 
 def should_continue(state: AgentState):
@@ -153,15 +186,62 @@ def create_forecast_graph():
 
 def run_forecast_agent(user_prompt, conversation_state=None):
     """Run the weather forecast agent using LangGraph workflow."""
+    from langchain_core.messages import SystemMessage
+    from datetime import datetime
+    
     graph = create_forecast_graph()
     
+    # Create system message for better date understanding
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    current_year = datetime.now().year
+    from datetime import timedelta
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    system_prompt = f"""You are a helpful weather assistant. When users ask about weather, you should:
+
+1. **Date Interpretation**: Be smart about understanding dates:
+   - "today" = {current_date}
+   - "tomorrow" = {tomorrow}
+   - "September 8th" or "Sep 8" = {current_year}-09-08 (assume current year if no year specified)
+   - "next week" = approximately 7 days from now
+   - Any date without year = assume current year ({current_year})
+   - If user says "2025-01-15", use that exact date
+
+2. **Location Interpretation**: Be flexible with locations:
+   - "Paris" = Paris, France
+   - "New York" = New York, USA
+   - "Tokyo" = Tokyo, Japan
+   - Include country if ambiguous
+
+3. **Response Format**: 
+   - When giving temperatures for multiple days, format the response as a list of dictionaries with the date and temperature for each day.
+   - When giving out a weather forecast for a single day, specify what day it is in a friendly format in the header of your response.
+
+4. **Always use your get_weather_forecast tool** when users ask about weather. Don't ask for clarification unless absolutely necessary.
+
+Current date context: {current_date} (Year: {current_year})"""
+    
     if conversation_state:
-        inputs = {
-            "messages": conversation_state["messages"] + [("user", user_prompt)],
-            "number_of_steps": conversation_state.get("number_of_steps", 0)
-        }
+        # Check if system message already exists
+        has_system_message = any(isinstance(msg, SystemMessage) for msg in conversation_state["messages"])
+        if has_system_message:
+            # Add user message to existing conversation
+            inputs = {
+                "messages": conversation_state["messages"] + [("user", user_prompt)],
+                "number_of_steps": conversation_state.get("number_of_steps", 0)
+            }
+        else:
+            # Add system message and user message
+            inputs = {
+                "messages": [SystemMessage(content=system_prompt)] + conversation_state["messages"] + [("user", user_prompt)],
+                "number_of_steps": conversation_state.get("number_of_steps", 0)
+            }
     else:
-        inputs = {"messages": [("user", user_prompt)], "number_of_steps": 0}
+        # First conversation - add system message
+        inputs = {
+            "messages": [SystemMessage(content=system_prompt), ("user", user_prompt)], 
+            "number_of_steps": 0
+        }
     
     print(f"🚀 Starting weather forecast workflow...")
     
