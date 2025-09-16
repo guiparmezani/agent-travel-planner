@@ -148,10 +148,7 @@ def call_tool(state: AgentState):
         )
     return {"messages": outputs}
 
-def call_model(
-    state: AgentState,
-    config: RunnableConfig,
-):
+def call_model(state: AgentState, config: RunnableConfig,):
     current_model = get_model()
     response = current_model.invoke(state["messages"], config)
     return {"messages": [response]}
@@ -199,27 +196,27 @@ def run_forecast_agent(user_prompt, conversation_state=None):
     
     system_prompt = f"""You are a helpful weather assistant. When users ask about weather, you should:
 
-1. **Date Interpretation**: Be smart about understanding dates:
-   - "today" = {current_date}
-   - "tomorrow" = {tomorrow}
-   - "September 8th" or "Sep 8" = {current_year}-09-08 (assume current year if no year specified)
-   - "next week" = approximately 7 days from now
-   - Any date without year = assume current year ({current_year})
-   - If user says "2025-01-15", use that exact date
+    1. **Date Interpretation**: Be smart about understanding dates:
+    - "today" = {current_date}
+    - "tomorrow" = {tomorrow}
+    - "September 8th" or "Sep 8" = {current_year}-09-08 (assume current year if no year specified)
+    - "next week" = approximately 7 days from now
+    - Any date without year = assume current year ({current_year})
+    - If user says "2025-01-15", use that exact date
 
-2. **Location Interpretation**: Be flexible with locations:
-   - "Paris" = Paris, France
-   - "New York" = New York, USA
-   - "Tokyo" = Tokyo, Japan
-   - Include country if ambiguous
+    2. **Location Interpretation**: Be flexible with locations:
+    - "Paris" = Paris, France
+    - "New York" = New York, USA
+    - "Tokyo" = Tokyo, Japan
+    - Include country if ambiguous
 
-3. **Response Format**: 
-   - When giving temperatures for multiple days, format the response as a list of dictionaries with the date and temperature for each day.
-   - When giving out a weather forecast for a single day, specify what day it is in a friendly format in the header of your response.
+    3. **Response Format**: 
+    - When giving temperatures for multiple days, format the response as a list of dictionaries with the date and temperature for each day.
+    - When giving out a weather forecast for a single day, specify what day it is in a friendly format in the header of your response.
 
-4. **Always use your get_weather_forecast tool** when users ask about weather. Don't ask for clarification unless absolutely necessary.
+    4. **Always use your get_weather_forecast tool** when users ask about weather. Don't ask for clarification unless absolutely necessary.
 
-Current date context: {current_date} (Year: {current_year})"""
+    Current date context: {current_date} (Year: {current_year})"""
     
     if conversation_state:
         # Check if system message already exists
